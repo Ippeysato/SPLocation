@@ -178,6 +178,28 @@ button:disabled { opacity: 0.5; cursor: default; }
   var watchId = null;
   var firstFix = true;
 
+  // 直近の測位を精度で重み付け平均し、ブレ(ジッター)を抑える
+  var fixBuffer = [];
+  var FIX_WINDOW_MS = 8000; // この時間内の測位だけを平均に使う
+
+  function pushFix(c, t) {
+    fixBuffer.push({ lat: c.latitude, lng: c.longitude, acc: c.accuracy || 50, t: t });
+    var cutoff = t - FIX_WINDOW_MS;
+    fixBuffer = fixBuffer.filter(function (f) { return f.t >= cutoff; });
+  }
+
+  function weightedFix() {
+    var wSum = 0, latSum = 0, lngSum = 0, accSum = 0;
+    fixBuffer.forEach(function (f) {
+      var w = 1 / (f.acc * f.acc); // 精度が良い(誤差が小さい)測位ほど重視
+      wSum += w;
+      latSum += f.lat * w;
+      lngSum += f.lng * w;
+      accSum += f.acc * w;
+    });
+    return { lat: latSum / wSum, lng: lngSum / wSum, acc: accSum / wSum };
+  }
+
   function setStatus(msg, kind) {
     statusEl.textContent = msg;
     statusEl.className = 'status' + (kind ? ' ' + kind : '');
@@ -202,25 +224,28 @@ button:disabled { opacity: 0.5; cursor: default; }
 
   function updateUI(pos) {
     var c = pos.coords;
-    document.getElementById('vLat').textContent = fmt(c.latitude, 6);
-    document.getElementById('vLng').textContent = fmt(c.longitude, 6);
-    document.getElementById('vAcc').textContent = c.accuracy ? '±' + Math.round(c.accuracy) + ' m' : '—';
+    pushFix(c, pos.timestamp || Date.now());
+    var avg = weightedFix();
+
+    document.getElementById('vLat').textContent = fmt(avg.lat, 6);
+    document.getElementById('vLng').textContent = fmt(avg.lng, 6);
+    document.getElementById('vAcc').textContent = avg.acc ? '±' + Math.round(avg.acc) + ' m' : '—';
     document.getElementById('vAlt').textContent = (c.altitude === null || c.altitude === undefined) ? '—' : Math.round(c.altitude) + ' m';
     document.getElementById('vSpd').textContent = (c.speed === null || c.speed === undefined) ? '—' : (c.speed * 3.6).toFixed(1) + ' km/h';
     document.getElementById('vTime').textContent = new Date(pos.timestamp).toLocaleTimeString('ja-JP');
 
-    var latlng = [c.latitude, c.longitude];
+    var latlng = [avg.lat, avg.lng];
     if (!marker) {
       marker = L.marker(latlng).addTo(map);
     } else {
       marker.setLatLng(latlng);
     }
-    if (c.accuracy) {
+    if (avg.acc) {
       if (!accCircle) {
-        accCircle = L.circle(latlng, { radius: c.accuracy, color: '#4a9eff', fillOpacity: 0.12, weight: 1 }).addTo(map);
+        accCircle = L.circle(latlng, { radius: avg.acc, color: '#4a9eff', fillOpacity: 0.12, weight: 1 }).addTo(map);
       } else {
         accCircle.setLatLng(latlng);
-        accCircle.setRadius(c.accuracy);
+        accCircle.setRadius(avg.acc);
       }
     }
     if (firstFix) {
@@ -230,8 +255,8 @@ button:disabled { opacity: 0.5; cursor: default; }
       map.panTo(latlng);
     }
 
-    document.getElementById('lnkGoogle').href = 'https://www.google.com/maps?q=' + c.latitude + ',' + c.longitude;
-    document.getElementById('lnkOsm').href = 'https://www.openstreetmap.org/?mlat=' + c.latitude + '&mlon=' + c.longitude + '#map=17/' + c.latitude + '/' + c.longitude;
+    document.getElementById('lnkGoogle').href = 'https://www.google.com/maps?q=' + avg.lat + ',' + avg.lng;
+    document.getElementById('lnkOsm').href = 'https://www.openstreetmap.org/?mlat=' + avg.lat + '&mlon=' + avg.lng + '#map=17/' + avg.lat + '/' + avg.lng;
 
     setStatus('現在地を取得しました。', 'ok');
   }
@@ -244,6 +269,7 @@ button:disabled { opacity: 0.5; cursor: default; }
   }
 
   btnOnce.addEventListener('click', function () {
+    fixBuffer = [];
     setStatus('位置情報を取得中…');
     navigator.geolocation.getCurrentPosition(
       updateUI,
@@ -254,6 +280,7 @@ button:disabled { opacity: 0.5; cursor: default; }
 
   btnWatch.addEventListener('click', function () {
     if (watchId === null) {
+      fixBuffer = [];
       setStatus('リアルタイム追跡を開始します…');
       watchId = navigator.geolocation.watchPosition(
         updateUI,
